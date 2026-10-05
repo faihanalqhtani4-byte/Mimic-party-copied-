@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Echo Showdown</title>
+  <style>
+    :root { color-scheme: dark; font: 16px system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      background: radial-gradient(circle at top, #39266c, #111326 65%);
+      color: #fff; padding: 20px;
+    }
+    main {
+      width: min(520px, 100%); padding: 28px; border-radius: 24px;
+      background: #1b1b32; box-shadow: 0 20px 70px #0007; text-align: center;
+    }
+    h1 { margin: 0 0 8px; font-size: 2rem; }
+    p { color: #c9c8df; line-height: 1.5; }
+    #prompt { font-size: 1.5rem; color: #ffe17a; min-height: 2.2em; }
+    button {
+      border: 0; border-radius: 14px; padding: 13px 18px; margin: 6px;
+      color: #17152a; background: #ffe17a; font: inherit; font-weight: 700;
+      cursor: pointer;
+    }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button.secondary { color: white; background: #484667; }
+    #status { min-height: 1.5em; }
+    #score { font-size: 2.3rem; font-weight: 800; color: #9dffce; }
+    .small { font-size: .9rem; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>🎙️ Echo Showdown</h1>
+  <p id="round">Pass the device between players.</p>
+  <div id="prompt">Ready?</div>
+  <p id="status">Tap start to get a sound challenge.</p>
+
+  <div>
+    <button id="start">Start round</button>
+    <button id="original" class="secondary" disabled>▶ Play original</button>
+  </div>
+  <div>
+    <button id="record" disabled>● Record copy</button>
+    <button id="playCopy" class="secondary" disabled>▶ Play copy</button>
+  </div>
+  <div id="score"></div>
+  <button id="next" hidden>Next round</button>
+  <p class="small">Make the sound as similar as you can. Best score wins!</p>
+</main>
+
+<script>
+  const challenges = [
+    "A tiny robot waking up",
+    "A dramatic movie villain laugh",
+    "A duck who just heard gossip",
+    "A squeaky door in a haunted house",
+    "A phone buzzing on a table",
+    "A cat demanding dinner",
+    "A race car starting up",
+    "A sleepy dragon sneezing"
+  ];
+
+  const $ = id => document.getElementById(id);
+  let originalBlob, copyBlob, recorder, chunks = [];
+  let originalStats, copyStats, audioContext;
+  let roundNumber = 0;
+
+  async function getMic() {
+    return navigator.mediaDevices.getUserMedia({ audio: true });
+  }
+
+  async function measure(blob) {
+    const ctx = audioContext || (audioContext = new AudioContext());
+    const data = await ctx.decodeAudioData(await blob.arrayBuffer());
+    let sum = 0, count = 0;
+    for (let c = 0; c < data.numberOfChannels; c++) {
+      const samples = data.getChannelData(c);
+      for (let i = 0; i < samples.length; i += 20) {
+        sum += samples[i] * samples[i];
+        count++;
+      }
+    }
+    return { duration: data.duration, rms: Math.sqrt(sum / count) };
+  }
+
+  function play(blob) {
+    if (!blob) return;
+    const audio = new Audio(URL.createObjectURL(blob));
+    audio.play();
+  }
+
+  $("start").onclick = async () => {
+    try {
+      const stream = await getMic();
+      stream.getTracks().forEach(track => track.stop());
+      roundNumber++;
+      originalBlob = copyBlob = null;
+      $("round").textContent = `Round ${roundNumber}`;
+      $("prompt").textContent =
+        challenges[Math.floor(Math.random() * challenges.length)];
+      $("status").textContent = "Player 1: record the original sound.";
+      $("score").textContent = "";
+      $("original").disabled = $("playCopy").disabled = true;
+      $("record").disabled = false;
+      $("record").textContent = "● Record original";
+      $("next").hidden = true;
+      $("record").dataset.phase = "original";
+    } catch {
+      $("status").textContent = "Please allow microphone access, then try again.";
+    }
+  };
+
+  $("record").onclick = async () => {
+    if (recorder && recorder.state === "recording") {
+      recorder.stop();
+      $("record").disabled = true;
+      $("status").textContent = "Saving recording…";
+      return;
+    }
+
+    try {
+      const stream = await getMic();
+      chunks = [];
+      recorder = new MediaRecorder(stream);
+      const phase = $("record").dataset.phase;
+
+      recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(track => track.stop());
+        const blob = new Blob(chunks, { type: recorder.mimeType });
+        if (phase === "original") {
+          originalBlob = blob;
+          originalStats = await measure(blob);
+          $("original").disabled = false;
+          $("record").dataset.phase = "copy";
+          $("record").textContent = "● Record copy";
+          $("record").disabled = false;
+          $("status").textContent =
+            "Player 2: listen to the original, then record your imitation.";
+        } else {
+          copyBlob = blob;
+          copyStats = await measure(blob);
+          $("playCopy").disabled = false;
+          scoreCopy();
+        }
+      };
+
+      recorder.start();
+      $("record").disabled = false;
+      $("record").textContent = "■ Stop recording";
+      $("status").textContent = phase === "original"
+        ? "Recording original… tap stop when finished."
+        : "Recording imitation… tap stop when finished.";
+    } catch {
+      $("status").textContent = "Couldn’t access the microphone. Check browser permissions.";
+    }
+  };
+
+  function scoreCopy() {
+    const durationMatch = Math.min(originalStats.duration, copyStats.duration) /
+                          Math.max(originalStats.duration, copyStats.duration);
+    const loudnessMatch = Math.min(originalStats.rms, copyStats.rms) /
+                          Math.max(originalStats.rms, copyStats.rms, 0.001);
+    const score = Math.round(100 * (durationMatch * 0.65 + loudnessMatch * 0.35));
+    $("score").textContent = `${score} / 100`;
+    $("status").textContent = "Imitation scored! Replay both and judge the performance.";
+    $("next").hidden = false;
+    $("record").disabled = true;
+  }
+
+  $("original").onclick = () => play(originalBlob);
+  $("playCopy").onclick = () => play(copyBlob);
+  $("next").onclick = () => $("start").click();
+</script>
+</body>
+</html>
